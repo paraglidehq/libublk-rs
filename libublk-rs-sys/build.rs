@@ -8,15 +8,31 @@ impl bindgen::callbacks::ParseCallbacks for Fix753 {
     }
 }
 
+/// Structs whose fields contain arrays larger than 32 elements, which serde
+/// cannot derive Serialize/Deserialize for (serde only supports [T; 0..=32]).
+const SERDE_SKIP_STRUCTS: &[&str] = &["__IncompleteArrayField", "blk_zone", "blk_zone_report"];
+
 fn add_serialize(outdir: &std::path::Path) -> anyhow::Result<i32> {
     use std::fs::File;
     use std::io::Write;
 
     let res = std::fs::read_to_string(outdir.join("ublk_cmd.rs"))?;
+    let re = regex::Regex::new(
+        r"#\s*\[\s*derive\s*\((?P<d>[^)]+)\)\s*\]\s*pub\s*(?P<s>struct|enum)\s+(?P<n>\w+)",
+    )?;
     let data = format!(
         "use serde::{{Serialize, Deserialize}};\n{}",
-        regex::Regex::new(r"#\s*\[\s*derive\s*\((?P<d>[^)]+)\)\s*\]\s*pub\s*(?P<s>struct|enum)")?
-            .replace_all(&res, "#[derive($d, Serialize, Deserialize)] pub $s")
+        re.replace_all(&res, |caps: &regex::Captures| {
+            let name = &caps["n"];
+            if SERDE_SKIP_STRUCTS.contains(&name) {
+                format!("#[derive({})] pub {} {}", &caps["d"], &caps["s"], name)
+            } else {
+                format!(
+                    "#[derive({}, Serialize, Deserialize)] pub {} {}",
+                    &caps["d"], &caps["s"], name
+                )
+            }
+        })
     );
     let mut fd = File::create(outdir.join("ublk_cmd.rs"))?;
     fd.write_all(data.as_bytes())?;
